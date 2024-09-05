@@ -326,6 +326,9 @@ def calculateFeatures1D(fileName, featuresByTime):
 
     channels_5min = []
 
+    NUM_RAND_SEGS = 3
+    common_inds = []
+
     for num, x in enumerate(channels):
 
         ch = chNames[num]
@@ -376,11 +379,16 @@ def calculateFeatures1D(fileName, featuresByTime):
         hig_fd = 0
 
         sig_select = sig_windows
-        if len(sig_windows) > 3:
+
+        if common_inds and len(sig_windows) > NUM_RAND_SEGS:
+            sig_select = sig_windows[common_inds]
+
+        elif len(sig_windows) > NUM_RAND_SEGS:
             inds = [0]
-            while len(set(inds)) < 3:
-                inds = (np.random.random(3)*len(sig_windows)).astype(int)
+            while len(set(inds)) < NUM_RAND_SEGS:
+                inds = (np.random.random(NUM_RAND_SEGS)*len(sig_windows)).astype(int)
             sig_select = sig_windows[inds]
+            common_inds = inds
 
         for signal in sig_select:
 
@@ -398,8 +406,14 @@ def calculateFeatures1D(fileName, featuresByTime):
             for k, v in siq.items():
                 siq_avgs[k] = siq_avgs.get(k, 0) + v
 
-        signal = sig_windows[int(len(sig_windows) * np.random.random())]
+            hm, hc = ant.hjorth_params(signal)
 
+            hjorth_mobility += hm
+            hjorth_complexity += hc
+
+            hig_fd += ant.higuchi_fd(signal)
+
+        # signal = sig_windows[int(len(sig_windows) * np.random.random())]
         # t1 = time.time()
         # ar, ma = arma(signal, *ARMA_AR_MA_NUM)
         # arma_ar += ar
@@ -412,30 +426,12 @@ def calculateFeatures1D(fileName, featuresByTime):
         # t2 = time.time()
         # print(f"lyapunov: {t2-t1}")
 
-        t1 = time.time()
-        hm, hc = ant.hjorth_params(signal)
-        t2 = time.time()
-        print(f"hjorth: {t2-t1}")
-
-        hjorth_mobility += hm
-        hjorth_complexity += hc
-
-        t1 = time.time()
-        hig_fd += ant.higuchi_fd(signal)
-        t2 = time.time()
-        print(f"hig_fd: {t2-t1}")
-
-        denom = len(sig_windows)
+        denom = len(sig_select)
 
         regularity /= denom
-
-        # Use random window instead of average for time
-        # arma_ar /= denom
-        # arma_ma /= denom
-        # lyapunov /= denom
-        # hjorth_mobility /= denom
-        # hjorth_complexity /= denom
-        # hig_fd /= denom
+        hjorth_mobility /= denom
+        hjorth_complexity /= denom
+        hig_fd /= denom
 
         for k, v in entropy_avgs.items():
             entropy_avgs[k] = v / denom
@@ -457,46 +453,72 @@ def calculateFeatures1D(fileName, featuresByTime):
         update_dict_of_dicts(featuresByTime, outKey=f"{ch}_hjorth_complexity", inKey=start_time[0], inVal=hjorth_complexity)
         update_dict_of_dicts(featuresByTime, outKey=f"{ch}_hig_fd", inKey=start_time[0], inVal=hig_fd)
 
-    return channels_5min, start_time[0], fs
+    return channels_5min, \
+           {"specs": specs, "freq": freq, "fs": fs, "chNames": chNames, "start_time": start_time, "end_time": end_time}
 
 
-def calculateFeatures2D(X, featuresByTime, stime, fs):
+def calculateFeatures2D(X, featuresByTime, spatialFeatures, stime, fs, chNames):
 
     # coherence
     coherenceByBand = {}
     
-    mi = 0
+    mutual_info = 0
     xcorr, xlag = 0, 0
     phaseLag = 0
     
     pts = 0
     for i in range(len(X)):
-        print(i)
+
+        print(chNames[i])
+
         for j in range(i+1, len(X)):
 
+            print(chNames[j])
+
+            # Find a random 300sec epoch within each 1 hour window
             m = int(len(X[i]) * np.random.random())
             x1 = X[i][m]
             x2 = X[j][m]
 
             pts += 1
+            dict_i_j = dict()
 
-            mi += twoChMI(np.array([x1, x2]))
+            mi = twoChMI(np.array([x1, x2]))
+            mutual_info += mi
+            dict_i_j['mutual_information'] = mi
+
             xc, xl = crossCorr(x1, x2, fs)
+
             xcorr += xc
             xlag += xl
+            dict_i_j['cross_corr'] = xc
+            dict_i_j['cross_lag'] = xl
 
-            phaseLag += twoChPhaseLag(x1, x2)
+            pl = twoChPhaseLag(x1, x2)
+            phaseLag += pl
+            dict_i_j['phase_lag'] = pl
 
             coh = twoChCoherence(x1, x2, fs)
             for k, v in coh.items():
                 coherenceByBand[k] = coherenceByBand.get(k, 0) + v
+                dict_i_j[k] = v
+
+            spatialFeatures[stime] = spatialFeatures.get(stime, dict())
+            d_of_d = spatialFeatures.get(stime)
+
+            for k, v in dict_i_j.items():
+                d_of_d[k] = d_of_d.get(k, dict())
+                update_dict_of_dicts(d_of_d.get(k),
+                                     outKey=chNames[i], inKey=chNames[j], inVal=v)
+
+            #update_dict_of_dicts(spatialFeatures.get(stime), d_of_d)
                     
-    mi /= pts
+    mutual_info /= pts
     xcorr /= pts
     xlag /= pts
     phaseLag /= pts
 
-    update_dict_of_dicts(featuresByTime, outKey="Mutual_information", inKey=stime, inVal=mi)
+    update_dict_of_dicts(featuresByTime, outKey="Mutual_information", inKey=stime, inVal=mutual_info)
     update_dict_of_dicts(featuresByTime, outKey="Cross_corr_max_norm", inKey=stime, inVal=xcorr)
     update_dict_of_dicts(featuresByTime, outKey="Cross_corr_lag", inKey=stime, inVal=xlag)
     update_dict_of_dicts(featuresByTime, outKey="Phase_lag", inKey=stime, inVal=phaseLag)
@@ -509,6 +531,7 @@ def calculateFeatures2D(X, featuresByTime, stime, fs):
 if __name__ == '__main__':
 
     #eg = scipy.io.loadmat("../EEG_ref/icare/0918/0918_001_003_EEG.mat")
+    # fpath meant to contain data from at most 1 patient. pt may be split into multiple paths.
     fpath = sys.argv[1]
     if not fpath.endswith('/'):
         fpath = fpath + "/"
@@ -520,15 +543,24 @@ if __name__ == '__main__':
 
     for fileName in fileNames:
         try:
-            channels300sec, st, fs = calculateFeatures1D(fileName, ptLevelFeatures)
+            channels300sec, preprocd = calculateFeatures1D(fileName, ptLevelFeatures)
+            st = preprocd.get("start_time")[0]
+            fs = preprocd.get("fs")
+            chNames = preprocd.get("chNames")
             df = pd.DataFrame.from_dict(ptLevelFeatures, orient='index')
             # Save excel file with just 1D features in case 2D calc fails or times out
             df.to_excel(f"{fpath}features{st}.xlsx")
 
-            calculateFeatures2D(channels300sec, ptLevelFeatures, st, fs)
+            calculateFeatures2D(channels300sec, ptLevelFeatures, ptLevelSpatial, st, fs, chNames)
             df = pd.DataFrame.from_dict(ptLevelFeatures, orient='index')
             df.to_excel(f"{fpath}features{st}.xlsx")
+
+
         except:
             pass
+
+    for hr, d_of_d in ptLevelSpatial.items():
+        for feat2D, vals in d_of_d.items():
+            pd.DataFrame.from_dict(vals).to_excel(f"{fpath}twoCh_{hr}_{feat2D}.xlsx")
 
 
