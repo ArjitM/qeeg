@@ -327,7 +327,7 @@ def calculateFeatures1D(fileName, featuresByTime):
     channels_5min = []
 
     NUM_RAND_SEGS = 3
-    common_inds = []
+    common_inds = None
 
     for num, x in enumerate(channels):
 
@@ -380,7 +380,7 @@ def calculateFeatures1D(fileName, featuresByTime):
 
         sig_select = sig_windows
 
-        if common_inds and len(sig_windows) > NUM_RAND_SEGS:
+        if (common_inds is not None) and len(sig_windows) > NUM_RAND_SEGS:
             sig_select = sig_windows[common_inds]
 
         elif len(sig_windows) > NUM_RAND_SEGS:
@@ -543,21 +543,25 @@ if __name__ == '__main__':
 
     for fileName in fileNames:
         try:
-            channels300sec, preprocd = calculateFeatures1D(fileName, ptLevelFeatures)
-            st = preprocd.get("start_time")[0]
-            fs = preprocd.get("fs")
-            chNames = preprocd.get("chNames")
-            df = pd.DataFrame.from_dict(ptLevelFeatures, orient='index')
-            # Save excel file with just 1D features in case 2D calc fails or times out
-            df.to_excel(f"{fpath}features{st}.xlsx")
-
-            calculateFeatures2D(channels300sec, ptLevelFeatures, ptLevelSpatial, st, fs, chNames)
-            df = pd.DataFrame.from_dict(ptLevelFeatures, orient='index')
-            df.to_excel(f"{fpath}features{st}.xlsx")
-
+            temp=5
 
         except:
             pass
+        channels300sec, preprocd = calculateFeatures1D(fileName, ptLevelFeatures)
+        st = preprocd.get("start_time")[0]
+        fs = preprocd.get("fs")
+        chNames = preprocd.get("chNames")
+        df = pd.DataFrame.from_dict(ptLevelFeatures, orient='index')
+        # Save excel file with just 1D features in case 2D calc fails or times out
+        df.to_excel(f"{fpath}features{st}.xlsx")
+
+        calculateFeatures2D(channels300sec, ptLevelFeatures, ptLevelSpatial, st, fs, chNames)
+        df = pd.DataFrame.from_dict(ptLevelFeatures, orient='index')
+        df.to_excel(f"{fpath}features{st}.xlsx")
+
+
+        # except Exception as e:
+        #     print(e)
 
     for hr, d_of_d in ptLevelSpatial.items():
         for feat2D, vals in d_of_d.items():
