@@ -542,26 +542,23 @@ if __name__ == '__main__':
     ptLevelSpatial = dict()
 
     for fileName in fileNames:
+
         try:
-            temp=5
+            channels300sec, preprocd = calculateFeatures1D(fileName, ptLevelFeatures)
+            st = preprocd.get("start_time")[0]
+            fs = preprocd.get("fs")
+            chNames = preprocd.get("chNames")
+            df = pd.DataFrame.from_dict(ptLevelFeatures, orient='index')
+            # Save excel file with just 1D features in case 2D calc fails or times out
+            df.to_excel(f"{fpath}features{st}.xlsx")
 
-        except:
-            pass
-        channels300sec, preprocd = calculateFeatures1D(fileName, ptLevelFeatures)
-        st = preprocd.get("start_time")[0]
-        fs = preprocd.get("fs")
-        chNames = preprocd.get("chNames")
-        df = pd.DataFrame.from_dict(ptLevelFeatures, orient='index')
-        # Save excel file with just 1D features in case 2D calc fails or times out
-        df.to_excel(f"{fpath}features{st}.xlsx")
-
-        calculateFeatures2D(channels300sec, ptLevelFeatures, ptLevelSpatial, st, fs, chNames)
-        df = pd.DataFrame.from_dict(ptLevelFeatures, orient='index')
-        df.to_excel(f"{fpath}features{st}.xlsx")
+            calculateFeatures2D(channels300sec, ptLevelFeatures, ptLevelSpatial, st, fs, chNames)
+            df = pd.DataFrame.from_dict(ptLevelFeatures, orient='index')
+            df.to_excel(f"{fpath}features{st}.xlsx")
 
 
-        # except Exception as e:
-        #     print(e)
+        except Exception as e:
+            print(e)
 
     for hr, d_of_d in ptLevelSpatial.items():
         for feat2D, vals in d_of_d.items():
