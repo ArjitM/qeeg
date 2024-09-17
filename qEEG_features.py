@@ -14,6 +14,9 @@ import sys
 from sklearn.preprocessing import KBinsDiscretizer
 from sklearn.metrics import mutual_info_score
 import time
+import warnings
+warnings.filterwarnings("ignore")
+
 
 
 
@@ -469,11 +472,11 @@ def calculateFeatures2D(X, featuresByTime, spatialFeatures, stime, fs, chNames):
     pts = 0
     for i in range(len(X)):
 
-        print(chNames[i])
+        # print(chNames[i])
 
         for j in range(i+1, len(X)):
 
-            print(chNames[j])
+            # print(chNames[j])
 
             # Find a random 300sec epoch within each 1 hour window
             m = int(len(X[i]) * np.random.random())
@@ -528,21 +531,17 @@ def calculateFeatures2D(X, featuresByTime, spatialFeatures, stime, fs, chNames):
         update_dict_of_dicts(featuresByTime, outKey=k, inKey=stime, inVal=v/pts)
 
 
-if __name__ == '__main__':
-
-    #eg = scipy.io.loadmat("../EEG_ref/icare/0918/0918_001_003_EEG.mat")
-    # fpath meant to contain data from at most 1 patient. pt may be split into multiple paths.
-    fpath = sys.argv[1]
-    if not fpath.endswith('/'):
-        fpath = fpath + "/"
-    fileNames = [f'{fpath}{f.replace(".mat", "")}' for f in os.listdir(fpath) if f.endswith('_EEG.mat')]
-
+def processFiles(fileNames):
 
     ptLevelFeatures = dict()  # dict
     ptLevelSpatial = dict()
 
+    t1 = time.time()
+
     for fileName in fileNames:
 
+        success1D = False
+        success2D = False
         try:
             channels300sec, preprocd = calculateFeatures1D(fileName, ptLevelFeatures)
             st = preprocd.get("start_time")[0]
@@ -551,17 +550,48 @@ if __name__ == '__main__':
             df = pd.DataFrame.from_dict(ptLevelFeatures, orient='index')
             # Save excel file with just 1D features in case 2D calc fails or times out
             df.to_excel(f"{fpath}features{st}.xlsx")
+            success1D = True
 
             calculateFeatures2D(channels300sec, ptLevelFeatures, ptLevelSpatial, st, fs, chNames)
             df = pd.DataFrame.from_dict(ptLevelFeatures, orient='index')
             df.to_excel(f"{fpath}features{st}.xlsx")
 
+            # for hr, d_of_d in ptLevelSpatial.items():
+            d_of_d = ptLevelSpatial.get(st)
+            for feat2D, vals in d_of_d.items():
+                pd.DataFrame.from_dict(vals).to_excel(f"{fpath}twoCh_{st}_{feat2D}.xlsx")
+            success2D = True
 
         except Exception as e:
             print(e)
 
-    for hr, d_of_d in ptLevelSpatial.items():
-        for feat2D, vals in d_of_d.items():
-            pd.DataFrame.from_dict(vals).to_excel(f"{fpath}twoCh_{hr}_{feat2D}.xlsx")
+        finally:
+            t2 = time.time()
+            print(f'Time taken for {fileName}: {t2-t1}')
+            print(f'{fileName} 1d parameters {success1D}, 2d parameters {success2D}')
+            t1 = t2
+
+
+
+
+if __name__ == '__main__':
+
+    #eg = scipy.io.loadmat("../EEG_ref/icare/0918/0918_001_003_EEG.mat")
+    # fpath meant to contain data from at most 1 patient. pt may be split into multiple paths.
+    fpath = sys.argv[1]
+    if not fpath.endswith('/'):
+        fpath = fpath + "/"
+    # sigFiles = [f'{fpath}{f.replace(".mat", "")}' for f in os.listdir(fpath) if f.endswith('_EEG.mat')]
+    # processFiles(sigFiles)
+
+    incomplete = []
+    for f in os.listdir(fpath):
+        if f.endswith(('_EEG.mat')):
+            t = int(f.split("_")[-2])
+            if not os.path.exists(f"{fpath}twoCh_{t}_total_coherence.xlsx"):
+                incomplete.append(f'{fpath}{f.replace(".mat", "")}')
+
+    print(f'To be processed: {incomplete}')
+    processFiles(incomplete)
 
 
