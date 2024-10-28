@@ -1,7 +1,9 @@
+import cupy as cp
+import cupyx
 import os
 import numpy as np
 import scipy
-from scipy.signal import hilbert, coherence, correlate, welch
+from cupyx.scipy.signal import hilbert, coherence, correlate, welch
 import antropy as ant
 import nolds
 import pywt
@@ -15,14 +17,12 @@ from sklearn.preprocessing import KBinsDiscretizer
 from sklearn.metrics import mutual_info_score
 import time
 import warnings
+
 warnings.filterwarnings("ignore")
-
-
-
 
 MIN_BURST_LEN = 0.5  # Bursts must be at least 0.5s = 500ms per ACNS
 MAX_BURST_LEN = 30  # Bursts can be at most 30s per ACNS
-MIN_SUPPRESSION_LEN = 1 # Suppressions must be at least 1s = 1000ms per ACNS
+MIN_SUPPRESSION_LEN = 1  # Suppressions must be at least 1s = 1000ms per ACNS
 MIN_PHASES = 4  # Bursts must have at least 4 phases
 SUPPRESSION_THRESHOLD = 10  # Suppression threshold in microvolts (10 uV in this case)
 
@@ -39,12 +39,13 @@ BANDS = {
 }
 
 BAND_LVLS = {
-    0 : 'delta',
-    1 : 'theta',
-    2 : 'alpha',
-    3 : 'beta',
-    4 : 'gamma',
+    0: 'delta',
+    1: 'theta',
+    2: 'alpha',
+    3: 'beta',
+    4: 'gamma',
 }
+
 
 def burstSuppressionDischarges(x, fs, suppression_threshold=SUPPRESSION_THRESHOLD, bsln_time=30):
     """
@@ -56,13 +57,17 @@ def burstSuppressionDischarges(x, fs, suppression_threshold=SUPPRESSION_THRESHOL
     :return:
     """
 
+    # Convert to CuPy array for GPU-acceleration
+    x = cp.asarray(x)
+
     # Calculate envelope
-    x_smooth = np.convolve(x, np.ones(10)/10, mode='same') # Smooth using 10-point window
-    mag_env = np.abs(np.imag(hilbert(x_smooth)))
+    x_smooth = cp.convolve(x, cp.ones(10) / 10, mode='same')  # Smooth using 10-point window
+
+    mag_env = cp.asarray(cp.abs(cp.imag(hilbert(x_smooth))))
 
     # Calculate baseline
-    mag_sorted = np.sort(mag_env)
-    baseline = np.mean(mag_sorted[:int(fs * bsln_time)])
+    mag_sorted = cp.sort(mag_env)
+    baseline = cp.mean(mag_sorted[:int(fs * bsln_time)])
 
     # Remove baseline from envelope -- new baseline is effectively 0
     mag_env = mag_env - baseline
@@ -88,18 +93,17 @@ def burstSuppressionDischarges(x, fs, suppression_threshold=SUPPRESSION_THRESHOL
 
 
 def filterStateSequence(seq, min_len=-np.inf, max_len=np.inf, phase_filt=False, min_phases=0, sgns=None):
-
     startState = int(seq[0])
-    seq = np.append(seq, 1 ^ seq[-1])  # add state opposite to last state to count last state length
+    seq = cp.append(seq, 1 ^ seq[-1])  # add state opposite to last state to count last state length
     # XOR to find where state changes
     changeInds = seq[1:] ^ seq[:-1]
-    stateLens = np.diff(np.nonzero(changeInds)[0], prepend=-1)
+    stateLens = cp.diff(cp.nonzero(changeInds)[0], prepend=-1)
 
     posLens = stateLens[1 ^ startState::2]  # if startState == 1, start from 0
-    negLens = stateLens[startState::2]      # if startState == 1, start from 1
+    negLens = stateLens[startState::2]  # if startState == 1, start from 1
 
     indices = []
-    cs = np.insert(np.cumsum(stateLens), 0, 0)
+    cs = cp.insert(cp.cumsum(stateLens), 0, 0)
 
     for i, ps in enumerate(posLens):
 
@@ -107,14 +111,14 @@ def filterStateSequence(seq, min_len=-np.inf, max_len=np.inf, phase_filt=False, 
         s = i * 2 + (1 ^ startState)
 
         if ps < min_len or ps > max_len:
-            seq[cs[s] : cs[s + 1]] = 0
+            seq[cs[s]: cs[s + 1]] = 0
             include = False
 
         elif phase_filt:
-            changes = np.sum(sgns[cs[s] : cs[s + 1] - 1] ^ sgns[cs[s] + 1 : cs[s + 1]])
+            changes = cp.sum(sgns[cs[s]: cs[s + 1] - 1] ^ sgns[cs[s] + 1: cs[s + 1]])
             if changes <= min_phases:
-                seq[cs[s] : cs[s + 1]] = 0
-                include= False
+                seq[cs[s]: cs[s + 1]] = 0
+                include = False
 
         if include:
             indices.append((cs[s], cs[s + 1]))
@@ -128,12 +132,11 @@ def eventStats(events, fs):
     :param events:
     :return: total, mean, std
     """
-    diff = np.diff(events).T.flatten() / fs
-    return np.sum(diff), np.mean(diff), np.std(diff)
+    diff = cp.diff(events).T.flatten() / fs
+    return cp.sum(diff), cp.mean(diff), cp.std(diff)
 
 
 def discretizeToProb(x, num_bins):
-
     # Discretize the signal into bins
     histogram, bin_edges = np.histogram(x, bins=num_bins, density=True)
 
@@ -160,7 +163,7 @@ def getEntropies(x, num_bins=85, tsallis_qs=10):
 
     for q in tsallis_qs:
         q = 1.001 if q == 1 else q  # prevent div by 0
-        S = (1 - np.sum([p**q for p in probabilities])) / (q-1)
+        S = (1 - np.sum([p ** q for p in probabilities])) / (q - 1)
         entropies['tsallis_q_{0}_entropy'.format(q)] = S
 
     entropies['approximate_entropy'] = ant.app_entropy(x)
@@ -177,18 +180,17 @@ def subInformationQuality(x, fs):
     :param fs: sampling rate
     :return:
     """
-
     # level i (1 onwards) has a frequency range of Fs/(2^(i-1)) to Fs/(2^i).
     # Here, we want the highest frequency cutoff to be 60, resulting in a 30-60 Hz gamma band; 15-30 beta; 8-15 alpha;
     # 4-8 theta; <4 delta. Note that gamma is defined as 30+ so use lower limit (30) * 2.
     # Note that number of wavelet coefficients are halved at each level.
     # Thus, use n-dependent binning to discretize for entropy calculation.
-    num_lvls = NUM_BANDS + int(np.round(np.log2(fs/(BANDS.get('gamma')[0]*2))))
+    num_lvls = NUM_BANDS + int(np.round(np.log2(fs / (BANDS.get('gamma')[0] * 2))))
     coefs = pywt.wavedec(x, 'db4', level=num_lvls)
     siq = {}
 
     for i in range(NUM_BANDS):
-        num_bins = int(2 * len(coefs[-i - 1])**(1/3))  # scott's rule
+        num_bins = int(2 * len(coefs[-i - 1]) ** (1 / 3))  # scott's rule
         prbs = discretizeToProb(coefs[-i - 1], num_bins)
         siq[BAND_LVLS.get(i) + "_SIQ"] = scipy.stats.entropy(prbs)
 
@@ -202,17 +204,19 @@ def spectral(x, fs, bands=BANDS):
     :param fs:
     :return:
     """
-    f, psd = welch(x, fs=fs, nperseg=fs*4)
+    x = cp.asarray(x)
+    
+    f, psd = welch(x, fs=fs, nperseg=fs * 4)
 
     band_powers = {}
 
     for b, f_lim in bands.items():
         band_powers[b + "_PSD"] = np.trapz(psd[(f >= f_lim[0]) & (f < f_lim[1])], x=f[(f >= f_lim[0]) & (f < f_lim[1])])
 
-    p_tot = np.sum(psd)
-    band_powers['mean_freq'] = np.sum(f * psd) / p_tot
+    p_tot = cp.sum(psd)
+    band_powers['mean_freq'] = cp.sum(f * psd) / p_tot
 
-    cum_pow = np.cumsum(psd)
+    cum_pow = cp.cumsum(psd)
     half_tot = cum_pow[-1] / 2
 
     # median frequency is the frequency at which the cumulative sum of power reaches half the total power of the signal.
@@ -223,7 +227,6 @@ def spectral(x, fs, bands=BANDS):
 
 
 def arma(x, p, q):
-
     model = ARIMA(x, order=(p, 0, q))
     res = model.fit()
     return res.arparams, res.maparams
@@ -239,36 +242,41 @@ def regularity_cri(x, fs):
     :param x:
     :return:
     """
+    x = cp.asarray(x)
+    
     # Step 1: Square the signal
     x_sq = x ** 2
 
     # Step 2: Create the moving average filter and apply it
     window_len = int(fs * 0.5)  # 500ms window
-    wts = np.ones(window_len) / window_len
-    x_smooth = np.convolve(x_sq, wts, mode='same')  # Apply filter to signal
+    wts = cp.ones(window_len) / window_len
+    x_smooth = cp.convolve(x_sq, wts, mode='same')  # Apply filter to signal
 
     # Step 3: Sort the smoothed signal in descending order
-    x_sm_desc = np.sort(x_smooth)[::-1]
+    x_sm_desc = cp.sort(x_smooth)[::-1]
 
     # Step 4: Compute the range statistic
     N = len(x_sm_desc)
-    u = np.arange(1, N + 1)
-    statsq = np.sum(u ** 2 * x_sm_desc) / (np.sum(x_sm_desc) * (N ** 2) / 3)
-    return np.sqrt(statsq)
+    u = cp.arange(1, N + 1)
+    statsq = cp.sum(u ** 2 * x_sm_desc) / (cp.sum(x_sm_desc) * (N ** 2) / 3)
+    return cp.sqrt(statsq)
 
 
 def twoChCoherence(x1, x2, fs):
+
+    x1 = cp.asarray(x1)
+    x2 = cp.asarray(x2)
 
     # Calculate the coherence
     f, Cxy = coherence(x1, x2, window='hann', nfft=500, fs=fs)
 
     band_coherence = {}
-    band_coherence['total_coherence'] = np.mean(Cxy)
+    band_coherence['total_coherence'] = cp.mean(Cxy)
 
     # Calculate the mean coherence value in the specified frequency range
     for band, lims in BANDS.items():
         l, h = lims
-        band_coherence[f"{band}_coherence"] = np.mean(Cxy[(f >= l) & (f < h)])
+        band_coherence[f"{band}_coherence"] = cp.mean(Cxy[(f >= l) & (f < h)])
 
     return band_coherence
 
@@ -280,35 +288,42 @@ def twoChMI(x2d):
 
 
 def twoChPhaseLag(x1, x2):
+    
+    x1 = cp.asarray(x1)
+    x2 = cp.asarray(x2)
+    
     # Calculate the Hilbert transform
     h1 = hilbert(x1)
     h2 = hilbert(x2)
 
     # Calculate the instantaneous phase
-    inst_phasei = np.angle(h1)
-    inst_phasej = np.angle(h2)
+    inst_phasei = cp.angle(h1)
+    inst_phasej = cp.angle(h2)
 
     # Calculate the output
-    return np.abs(np.mean(np.sign(inst_phasej - inst_phasei)))
+    return cp.abs(cp.mean(cp.sign(inst_phasej - inst_phasei)))
 
 
 def crossCorr(x1, x2, fs):
+    
+    x1 = cp.asarray(x1)
+    x2 = cp.asarray(x2)
+    
     # Compute cross-correlation
     acor = correlate(x1, x2, mode='full')
-    lag = np.arange(-len(x1) + 1, len(x2))
+    lag = cp.arange(-len(x1) + 1, len(x2))
 
     # Find the index of maximum absolute value of the cross-correlation
-    ind = np.argmax(np.abs(acor))
+    ind = cp.argmax(cp.abs(acor))
 
     # Normalized max corr
-    maxCorr = (np.max(np.abs(acor)) - np.mean(np.abs(acor))) / np.std(np.abs(acor))
+    maxCorr = (cp.max(cp.abs(acor)) - cp.mean(cp.abs(acor))) / cp.std(cp.abs(acor))
     lag = lag[ind] / fs
-    
+
     return maxCorr, lag
 
 
 def preprocess(fileName, window_secs=60):
-
     rescaled_data, channelNames, fs, utility_frequency, st, et = load_recording_data(fileName)
     return (
         *segment_EEG(rescaled_data.astype(np.float64), channelNames, window_time=window_secs,
@@ -321,7 +336,6 @@ def preprocess(fileName, window_secs=60):
 
 
 def update_dict_of_dicts(dOfD, outKey, inKey, inVal):
-
     D = dOfD.get(outKey, dict())
     D[inKey] = inVal
     dOfD[outKey] = D
@@ -331,7 +345,7 @@ def calculateFeatures1D(fileName, featuresByTime):
     EEG_segs, BSR_segs, start_ids, seg_masks, specs, freq, fs, chNames, start_time, end_time = preprocess(fileName)
 
     print(seg_masks)
-    # EEG_segs = EEG_segs[[m == "normal" for m in seg_masks]]
+    EEG_segs = EEG_segs[[m == "normal" for m in seg_masks]]
     channels = EEG_segs.transpose((1, 0, 2))  # transpose such that 1st dim in CHANNELS is an electrode channel
 
     channels_5min = []
@@ -356,9 +370,8 @@ def calculateFeatures1D(fileName, featuresByTime):
         sig_windows = []
         i = 0
         while i <= len(full_signal) - win_size:
-            sig_windows.append(full_signal[i:i+win_size])
+            sig_windows.append(full_signal[i:i + win_size])
             i = i + step_size
-
 
         sig_windows = np.array(sig_windows)
         channels_5min.append(sig_windows)
@@ -396,7 +409,7 @@ def calculateFeatures1D(fileName, featuresByTime):
         elif len(sig_windows) > NUM_RAND_SEGS:
             inds = [0]
             while len(set(inds)) < NUM_RAND_SEGS:
-                inds = (np.random.random(NUM_RAND_SEGS)*len(sig_windows)).astype(int)
+                inds = (np.random.random(NUM_RAND_SEGS) * len(sig_windows)).astype(int)
             sig_select = sig_windows[inds]
             common_inds = inds
 
@@ -460,28 +473,28 @@ def calculateFeatures1D(fileName, featuresByTime):
         update_dict_of_dicts(featuresByTime, outKey=f"{ch}_arma_ma", inKey=start_time[0], inVal=arma_ma)
         update_dict_of_dicts(featuresByTime, outKey=f"{ch}_lyapunov", inKey=start_time[0], inVal=lyapunov)
         update_dict_of_dicts(featuresByTime, outKey=f"{ch}_hjorth_mobility", inKey=start_time[0], inVal=hjorth_mobility)
-        update_dict_of_dicts(featuresByTime, outKey=f"{ch}_hjorth_complexity", inKey=start_time[0], inVal=hjorth_complexity)
+        update_dict_of_dicts(featuresByTime, outKey=f"{ch}_hjorth_complexity", inKey=start_time[0],
+                             inVal=hjorth_complexity)
         update_dict_of_dicts(featuresByTime, outKey=f"{ch}_hig_fd", inKey=start_time[0], inVal=hig_fd)
 
     return channels_5min, \
-           {"specs": specs, "freq": freq, "fs": fs, "chNames": chNames, "start_time": start_time, "end_time": end_time}
+        {"specs": specs, "freq": freq, "fs": fs, "chNames": chNames, "start_time": start_time, "end_time": end_time}
 
 
 def calculateFeatures2D(X, featuresByTime, spatialFeatures, stime, fs, chNames):
-
     # coherence
     coherenceByBand = {}
-    
+
     mutual_info = 0
     xcorr, xlag = 0, 0
     phaseLag = 0
-    
+
     pts = 0
     for i in range(len(X)):
 
         # print(chNames[i])
 
-        for j in range(i+1, len(X)):
+        for j in range(i + 1, len(X)):
 
             # print(chNames[j])
 
@@ -521,8 +534,8 @@ def calculateFeatures2D(X, featuresByTime, spatialFeatures, stime, fs, chNames):
                 update_dict_of_dicts(d_of_d.get(k),
                                      outKey=chNames[i], inKey=chNames[j], inVal=v)
 
-            #update_dict_of_dicts(spatialFeatures.get(stime), d_of_d)
-                    
+            # update_dict_of_dicts(spatialFeatures.get(stime), d_of_d)
+
     mutual_info /= pts
     xcorr /= pts
     xlag /= pts
@@ -535,11 +548,10 @@ def calculateFeatures2D(X, featuresByTime, spatialFeatures, stime, fs, chNames):
 
     for k, v in coherenceByBand.items():
         coherenceByBand[k] = v / pts
-        update_dict_of_dicts(featuresByTime, outKey=k, inKey=stime, inVal=v/pts)
+        update_dict_of_dicts(featuresByTime, outKey=k, inKey=stime, inVal=v / pts)
 
 
 def processFiles(fileNames):
-
     ptLevelFeatures = dict()  # dict
     ptLevelSpatial = dict()
 
@@ -574,16 +586,14 @@ def processFiles(fileNames):
 
         finally:
             t2 = time.time()
-            print(f'Time taken for {fileName}: {t2-t1}')
+            print(f'Time taken for {fileName}: {t2 - t1}')
             print(f'{fileName} 1d parameters {success1D}, 2d parameters {success2D}')
             t1 = t2
 
 
-
-
 if __name__ == '__main__':
 
-    #eg = scipy.io.loadmat("../EEG_ref/icare/0918/0918_001_003_EEG.mat")
+    # eg = scipy.io.loadmat("../EEG_ref/icare/0918/0918_001_003_EEG.mat")
     # fpath meant to contain data from at most 1 patient. pt may be split into multiple paths.
     fpath = sys.argv[1]
     if not fpath.endswith('/'):
