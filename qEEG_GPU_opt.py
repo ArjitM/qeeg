@@ -325,9 +325,11 @@ def crossCorr(x1, x2, fs):
 
 def preprocess(fileName, window_secs=60):
     rescaled_data, channelNames, fs, utility_frequency, st, et = load_recording_data(fileName)
+
     return (
-        *segment_EEG(rescaled_data.astype(np.float64), channelNames, window_time=window_secs,
-                        step_time=window_secs // 2, Fs=fs, bandpass_freq=(0.5, 50), notch_freq=60),
+        # *segment_EEG(rescaled_data.astype(np.float64), channelNames, window_time=window_secs,
+        #                 step_time=window_secs // 2, Fs=fs, bandpass_freq=(0.5, 50), notch_freq=60),
+        rescaled_data,
         fs,
         channelNames,
         st,
@@ -342,27 +344,23 @@ def update_dict_of_dicts(dOfD, outKey, inKey, inVal):
 
 
 def calculateFeatures1D(fileName, featuresByTime):
-    EEG_segs, BSR_segs, start_ids, seg_masks, specs, freq, fs, chNames, start_time, end_time = preprocess(fileName)
-
-    print(seg_masks)
-    EEG_segs = EEG_segs[[m == "normal" for m in seg_masks]]
-    channels = EEG_segs.transpose((1, 0, 2))  # transpose such that 1st dim in CHANNELS is an electrode channel
+    channels, fs, chNames, start_time, end_time = preprocess(fileName)
 
     channels_5min = []
 
     NUM_RAND_SEGS = 3
     common_inds = None
 
-    for num, x in enumerate(channels):
+    for num, full_signal in enumerate(channels):
 
         ch = chNames[num]
         print(num)
 
-        # preprocessing windows were 1 minute long with step size 30 sec.
-        # Change new windows to 5 minute epochs, stepsize = 2.5 minutes for overlap.
-        full_signal = np.array([])
-        for w in x[::2]:
-            full_signal = np.append(full_signal, w)
+        # # preprocessing windows were 1 minute long with step size 30 sec.
+        # # Change new windows to 5 minute epochs, stepsize = 2.5 minutes for overlap.
+        # full_signal = np.array([])
+        # for w in x[::2]:
+        #     full_signal = np.append(full_signal, w)
 
         win_size = int(300 * fs)  # 5 minute window = 300 sec
         step_size = int(win_size // 2)
@@ -478,7 +476,7 @@ def calculateFeatures1D(fileName, featuresByTime):
         update_dict_of_dicts(featuresByTime, outKey=f"{ch}_hig_fd", inKey=start_time[0], inVal=hig_fd)
 
     return channels_5min, \
-        {"specs": specs, "freq": freq, "fs": fs, "chNames": chNames, "start_time": start_time, "end_time": end_time}
+        {"fs": fs, "chNames": chNames, "start_time": start_time, "end_time": end_time}
 
 
 def calculateFeatures2D(X, featuresByTime, spatialFeatures, stime, fs, chNames):
